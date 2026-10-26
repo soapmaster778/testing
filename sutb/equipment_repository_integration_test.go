@@ -9,20 +9,8 @@ import (
 func setupEquipmentRepository(t *testing.T) *EquipmentRepository {
 	t.Helper()
 
-	db, err := Connect()
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	})
-
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Ping: %v", err)
-	}
-	return NewEquipmentRepository(db)
+	resetTestState(t)
+	return NewEquipmentRepository(testDB)
 }
 
 func createTestEquipment(t *testing.T, repo *EquipmentRepository) Equipment {

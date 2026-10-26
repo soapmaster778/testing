@@ -13,11 +13,17 @@ func TestRentalService_serviceState(t *testing.T) {
 		allowed  bool
 		total    int64
 		rejected bool
+		quantity int
+		status   int
+		requests int
+		message  string
 	}{
-		{"успішна оренда", 1, false, true, 1000, false},
-		{"відмова політики", 1, false, false, 0, true},
-		{"межа знижки 7 днів", 7, false, true, 6510, false},
-		{"знижка 14 днів", 14, true, true, 11900, false},
+		{name: "успішна оренда", days: 1, allowed: true, total: 1000, quantity: 2, status: 200, requests: 1},
+		{name: "відмова політики", days: 1, rejected: true, quantity: 2, status: 200, requests: 1, message: "Оренду не дозволено"},
+		{name: "межа знижки 7 днів", days: 7, allowed: true, total: 6510, quantity: 2, status: 200, requests: 1},
+		{name: "знижка 14 днів", days: 14, premium: true, allowed: true, total: 11900, quantity: 2, status: 200, requests: 1},
+		{name: "зовнішній сервіс недоступний", days: 1, quantity: 2, status: 503, requests: 1, message: "rental policy: HTTP 503"},
+		{name: "локальна відмова", days: 1, allowed: true, rejected: true, quantity: 11, status: 200, requests: 0, message: "Недостатньо обладнання"},
 	}
 
 	for _, tc := range cases {
@@ -27,33 +33,38 @@ func TestRentalService_serviceState(t *testing.T) {
 			rentalRepo := NewRentalRepository(equipmentRepo.db)
 			cleanupTestRentals(t, rentalRepo, equipment.ID)
 
-			policyCalls := 0
-			policy := RentalPolicyFunc(func(item Equipment, quantity, days int) bool {
-				policyCalls++
-				if item != equipment || quantity != 2 || days != tc.days {
-					t.Errorf("Політика отримала неправильні аргументи")
-				}
-				return tc.allowed
-			})
-
-			service := NewRentalService(equipmentRepo, rentalRepo, policy)
+			stubRentalPolicy(t, tc.status, tc.allowed)
+			service := NewRentalService(equipmentRepo, rentalRepo, NewHTTPRentalPolicy(wireMockURL))
 			order, err := service.Rent(RentalRequest{
 				Reference:   "rent-" + equipment.Code,
 				EquipmentID: equipment.ID,
-				Quantity:    2,
+				Quantity:    tc.quantity,
 				Days:        tc.days,
 				Premium:     tc.premium,
 			})
 
-			if policyCalls != 1 {
-				t.Errorf("Очікували 1 виклик політики, отримали %d", policyCalls)
+			verifyPolicyRequests(t, equipment.ID, tc.quantity, tc.days, tc.requests)
+			expectedRows := 1
+			if tc.message != "" {
+				expectedRows = 0
+			}
+			for _, table := range []string{"rentals", "rental_items"} {
+				var count int
+				if err := testDB.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if count != expectedRows {
+					t.Errorf("%s: очікували %d записів, отримали %d", table, expectedRows, count)
+				}
 			}
 
-			if tc.rejected {
+			if tc.message != "" {
+				if err == nil || err.Error() != tc.message {
+					t.Fatalf("Очікували %q, отримали %v", tc.message, err)
+				}
 				var rejected RentalRejectedError
-				if !errors.As(err, &rejected) ||
-					rejected.Message != "Оренду не дозволено" {
-					t.Fatalf("Очікували відмову політики, отримали %v", err)
+				if errors.As(err, &rejected) != tc.rejected {
+					t.Fatalf("Неправильний тип помилки: %T", err)
 				}
 
 				for _, status := range []RentalStatus{
@@ -112,8 +123,9 @@ func TestRentalService_ReturnRentalIntegration(t *testing.T) {
 	equipment := createTestEquipment(t, equipmentRepo)
 	rentalRepo := NewRentalRepository(equipmentRepo.db)
 	cleanupTestRentals(t, rentalRepo, equipment.ID)
-	service := NewRentalService(equipmentRepo, rentalRepo,
-		RentalPolicyFunc(func(Equipment, int, int) bool { return true }))
+	stubRentalPolicy(t, 200, true)
+	service := NewRentalService(equipmentRepo, rentalRepo, NewHTTPRentalPolicy(wireMockURL))
+	t.Cleanup(func() { verifyPolicyRequests(t, equipment.ID, 2, 7, 1) })
 
 	created, err := service.Rent(RentalRequest{
 		Reference:   "return-" + equipment.Code,

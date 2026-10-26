@@ -15,13 +15,13 @@ type RentalStore interface {
 }
 
 type RentalPolicy interface {
-	IsAllowed(equipment Equipment, quantity int, days int) bool
+	IsAllowed(equipment Equipment, quantity int, days int) (bool, error)
 }
 
 type RentalPolicyFunc func(equipment Equipment, quantity int, days int) bool
 
-func (f RentalPolicyFunc) IsAllowed(equipment Equipment, quantity int, days int) bool {
-	return f(equipment, quantity, days)
+func (f RentalPolicyFunc) IsAllowed(equipment Equipment, quantity int, days int) (bool, error) {
+	return f(equipment, quantity, days), nil
 }
 
 type RentalService struct {
@@ -86,7 +86,11 @@ func (s *RentalService) Rent(request RentalRequest) (RentalOrder, error) {
 		return RentalOrder{}, RentalRejectedError{"Недостатньо обладнання"}
 	}
 
-	if !s.policy.IsAllowed(*item, request.Quantity, request.Days) {
+	allowed, err := s.policy.IsAllowed(*item, request.Quantity, request.Days)
+	if err != nil {
+		return RentalOrder{}, err
+	}
+	if !allowed {
 		return RentalOrder{}, RentalRejectedError{"Оренду не дозволено"}
 	}
 
